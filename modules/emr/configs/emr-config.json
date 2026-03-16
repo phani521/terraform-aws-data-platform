@@ -1,0 +1,10 @@
+[
+  {
+    "Classification": "spark-defaults",
+    "Properties": {
+      "spark.executor.instances": "2",
+      "spark.executor.memory": "4G",
+      "spark.executor.cores": "2"
+    }
+  }
+]
