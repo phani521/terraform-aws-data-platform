@@ -1,0 +1,133 @@
+name: EMR Terraform CI/CD
+
+on:
+  pull_request:
+    paths:
+      - "emr/**"
+      - "modules/emr/**"
+      - "modules/network/**"
+  push:
+    branches: [ master ]
+    paths:
+      - "emr/**"
+      - "modules/emr/**"
+      - "modules/network/**"
+  workflow_dispatch:
+
+env:
+  TF_VERSION: "1.9.5"
+  WORKING_DIR: "emr"
+  AWS_REGION: "us-east-1"
+  # ✅ REMOVED: TERRAFORM_CLI_PATH (causes credential errors)
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          terraform init \
+            -backend-config="bucket=ppd-terraform-state" \
+            -backend-config="key=data-platform/emr/terraform.tfstate" \
+            -backend-config="region=us-east-1" \
+            -backend-config="dynamodb_table=ppd-terraform-locks" \
+            -input=false
+
+      - name: Select workspace
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          terraform workspace select ${{ github.base_ref == 'master' && 'prod' || 'dev' }} || \
+          terraform workspace new ${{ github.base_ref == 'master' && 'prod' || 'dev' }}
+
+      - name: Terraform Fmt
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Validate
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform validate
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          terraform plan \
+            -var="env=${{ github.base_ref == 'master' && 'prod' || 'dev' }}" \
+            -no-color \
+            -out=tfplan
+
+      - name: Upload Plan Artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/upload-artifact@v4
+        with:
+          name: emr-tfplan
+          path: ${{ env.WORKING_DIR }}/tfplan
+          retention-days: 1
+
+  apply:
+    needs: plan
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials (Production)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Download Plan Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: emr-tfplan
+          path: ${{ env.WORKING_DIR }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          terraform init \
+            -backend-config="bucket=ppd-terraform-state" \
+            -backend-config="key=data-platform/emr/terraform.tfstate" \
+            -backend-config="region=us-east-1" \
+            -backend-config="dynamodb_table=ppd-terraform-locks" \
+            -input=false
+
+      - name: Select prod workspace
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          terraform workspace select prod || terraform workspace new prod
+
+      - name: Terraform Apply
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform apply -auto-approve tfplan
