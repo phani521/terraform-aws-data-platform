@@ -65,7 +65,7 @@ resource "aws_security_group" "emr_core" {
   }
 }
 
-# EMR Service Access Security Group (REQUIRED for private subnet + custom SGs)
+# EMR Service Access Security Group (REQUIRED for private subnet)
 resource "aws_security_group" "emr_service_access" {
   name        = "ppd-${var.env}-emr-service-access-sg"
   description = "EMR service access SG (private subnet)"
@@ -142,7 +142,7 @@ resource "aws_iam_role_policy_attachment" "emr_ec2" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceforEC2Role"
 }
 
-# ✅ NEW: SSM Policy for Session Manager access
+# SSM Policy for Session Manager access
 resource "aws_iam_role_policy_attachment" "emr_ssm" {
   role       = aws_iam_role.emr_ec2.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
@@ -152,9 +152,6 @@ resource "aws_iam_instance_profile" "emr_ec2" {
   name = "ppd-${var.env}-emr-ec2-instance-profile"
   role = aws_iam_role.emr_ec2.name
 }
-
-# EMR Autoscaling Role (REMOVED autoscaling_role since no autoscaling policy)
-# resource "aws_iam_role" "emr_autoscaling" { ... }  # Commented out
 
 # S3 bucket for EMR logs
 resource "aws_s3_bucket" "emr_logs" {
@@ -166,14 +163,13 @@ resource "aws_s3_bucket" "emr_logs" {
   }
 }
 
-# EMR Cluster
+# EMR Cluster - PRIVATE SUBNET READY
 resource "aws_emr_cluster" "this" {
   name          = "ppd-${var.env}-batch-emr"
   release_label = var.emr_release
   applications  = ["Spark"]
 
   service_role = aws_iam_role.emr_service.arn
-  # REMOVED: autoscaling_role (no autoscaling policy used)
 
   ec2_attributes {
     instance_profile                  = aws_iam_instance_profile.emr_ec2.arn
@@ -205,9 +201,16 @@ resource "aws_emr_cluster" "this" {
     Environment = var.env
     ManagedBy   = "terraform"
   }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.emr_ec2,
+    aws_iam_role_policy_attachment.emr_ssm,
+    aws_iam_role_policy_attachment.emr_service,
+    aws_s3_bucket.emr_logs
+  ]
 }
 
-# Outputs
+# Outputs - REMOVED master_public_dns_name (no longer exists)
 output "cluster_id" {
   value       = aws_emr_cluster.this.id
   description = "EMR cluster ID"
