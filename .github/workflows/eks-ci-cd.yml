@@ -12,11 +12,13 @@ on:
       - "eks/**"
       - "modules/eks/**"
       - "modules/network/**"
+  workflow_dispatch:
 
 env:
-  TF_VERSION: "1.6.0"
+  TF_VERSION: "1.9.5"                    # Updated
   WORKING_DIR: "eks"
   AWS_REGION: "us-east-1"
+  TF_VAR_env: ${{ github.base_ref == 'main' && 'prod' || 'dev' }}  # 🔥 FIXED
 
 jobs:
   plan:
@@ -25,6 +27,7 @@ jobs:
       contents: read
       id-token: write
       pull-requests: write
+    environment: ${{ github.base_ref == 'main' && 'production' || 'development' }}  # 🔥 ADDED
 
     steps:
       - name: Checkout
@@ -38,13 +41,19 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-access-key-id: ${{ secrets.AWS_DEV_ACCESS_KEY_ID || secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_DEV_SECRET_ACCESS_KEY || secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Terraform Init
         working-directory: ${{ env.WORKING_DIR }}
-        run: terraform init -input=false
+        run: |
+          terraform init \
+            -backend-config="bucket=ppd-terraform-state" \
+            -backend-config="key=data-platform/eks/terraform.tfstate" \
+            -backend-config="region=us-east-1" \
+            -backend-config="dynamodb_table=ppd-terraform-locks" \
+            -input=false
 
       - name: Select workspace
         working-directory: ${{ env.WORKING_DIR }}
@@ -63,7 +72,7 @@ jobs:
       - name: Terraform Plan
         id: plan
         working-directory: ${{ env.WORKING_DIR }}
-        run: terraform plan -no-color -out=tfplan
+        run: terraform plan -var="env=${{ github.base_ref == 'main' && 'prod' || 'dev' }}" -no-color -out=tfplan  # 🔥 FIXED
 
       - name: Upload Plan
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -71,13 +80,13 @@ jobs:
         with:
           name: eks-tfplan
           path: ${{ env.WORKING_DIR }}/tfplan
+          retention-days: 1
 
   apply:
     needs: plan
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
-
     permissions:
       contents: read
       id-token: write
@@ -94,8 +103,8 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-access-key-id: ${{ secrets.AWS_PROD_ACCESS_KEY_ID || secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_PROD_SECRET_ACCESS_KEY || secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Download Plan
@@ -106,7 +115,13 @@ jobs:
 
       - name: Terraform Init
         working-directory: ${{ env.WORKING_DIR }}
-        run: terraform init -input=false
+        run: |
+          terraform init \
+            -backend-config="bucket=ppd-terraform-state" \
+            -backend-config="key=data-platform/eks/terraform.tfstate" \
+            -backend-config="region=us-east-1" \
+            -backend-config="dynamodb_table=ppd-terraform-locks" \
+            -input=false
 
       - name: Select workspace
         working-directory: ${{ env.WORKING_DIR }}
